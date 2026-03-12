@@ -141,7 +141,7 @@ export async function generateRetestContextFile(
     let fullDiff = diffFull.stdout;
     let truncated = false;
     if (Buffer.byteLength(fullDiff, 'utf8') > MAX_DIFF_BYTES) {
-      fullDiff = fullDiff.slice(0, MAX_DIFF_BYTES);
+      fullDiff = Buffer.from(fullDiff, 'utf8').subarray(0, MAX_DIFF_BYTES).toString('utf8');
       truncated = true;
     }
 

@@ -142,10 +142,14 @@ export async function snapshotDeliverables(
   await ensureDirectory(snapshotDir);
 
   for (const file of files) {
-    await fs.copyFile(
-      path.join(sourceDir, file),
-      path.join(snapshotDir, file)
-    );
+    try {
+      await fs.copyFile(
+        path.join(sourceDir, file),
+        path.join(snapshotDir, file)
+      );
+    } catch {
+      // Skip files that can't be copied (permissions, broken symlinks)
+    }
   }
 
   return snapshotDir;

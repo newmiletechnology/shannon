@@ -120,6 +120,35 @@ const preflightActs = proxyActivities<typeof activities>({
 });
 
 /**
+ * Run thunks with a concurrency limit, returning PromiseSettledResult for each.
+ * When limit >= thunks.length, all launch concurrently — identical to Promise.allSettled.
+ * NOTE: Results are in completion order, not input order. Callers must key on value fields, not index.
+ */
+async function runWithConcurrencyLimit(
+  thunks: Array<() => Promise<VulnExploitPipelineResult>>,
+  limit: number
+): Promise<PromiseSettledResult<VulnExploitPipelineResult>[]> {
+  const results: PromiseSettledResult<VulnExploitPipelineResult>[] = [];
+  const inFlight = new Set<Promise<void>>();
+
+  for (const thunk of thunks) {
+    const slot = thunk().then(
+      (value) => { results.push({ status: 'fulfilled', value }); },
+      (reason: unknown) => { results.push({ status: 'rejected', reason }); }
+    ).finally(() => { inFlight.delete(slot); });
+
+    inFlight.add(slot);
+
+    if (inFlight.size >= limit) {
+      await Promise.race(inFlight);
+    }
+  }
+
+  await Promise.allSettled(inFlight);
+  return results;
+}
+
+/**
  * Compute aggregated metrics from the current pipeline state.
  * Called on both success and failure to provide partial metrics.
  */
@@ -334,33 +363,6 @@ export async function pentestPipelineWorkflow(
         failures: failedPipelines,
       });
     }
-  }
-
-  // Run thunks with a concurrency limit, returning PromiseSettledResult for each.
-  // When limit >= thunks.length (default), all launch concurrently — identical to Promise.allSettled.
-  // NOTE: Results are in completion order, not input order. Callers must key on value fields, not index.
-  async function runWithConcurrencyLimit(
-    thunks: Array<() => Promise<VulnExploitPipelineResult>>,
-    limit: number
-  ): Promise<PromiseSettledResult<VulnExploitPipelineResult>[]> {
-    const results: PromiseSettledResult<VulnExploitPipelineResult>[] = [];
-    const inFlight = new Set<Promise<void>>();
-
-    for (const thunk of thunks) {
-      const slot = thunk().then(
-        (value) => { results.push({ status: 'fulfilled', value }); },
-        (reason: unknown) => { results.push({ status: 'rejected', reason }); }
-      ).finally(() => { inFlight.delete(slot); });
-
-      inFlight.add(slot);
-
-      if (inFlight.size >= limit) {
-        await Promise.race(inFlight);
-      }
-    }
-
-    await Promise.allSettled(inFlight);
-    return results;
   }
 
   try {
@@ -631,31 +633,6 @@ export async function retestPipelineWorkflow(
         failures: failedPipelines,
       });
     }
-  }
-
-  // Concurrency limiter (same pattern as pentestPipelineWorkflow)
-  async function runWithConcurrencyLimit(
-    thunks: Array<() => Promise<VulnExploitPipelineResult>>,
-    limit: number
-  ): Promise<PromiseSettledResult<VulnExploitPipelineResult>[]> {
-    const results: PromiseSettledResult<VulnExploitPipelineResult>[] = [];
-    const inFlight = new Set<Promise<void>>();
-
-    for (const thunk of thunks) {
-      const slot = thunk().then(
-        (value) => { results.push({ status: 'fulfilled', value }); },
-        (reason: unknown) => { results.push({ status: 'rejected', reason }); }
-      ).finally(() => { inFlight.delete(slot); });
-
-      inFlight.add(slot);
-
-      if (inFlight.size >= limit) {
-        await Promise.race(inFlight);
-      }
-    }
-
-    await Promise.allSettled(inFlight);
-    return results;
   }
 
   try {

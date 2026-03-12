@@ -35,7 +35,7 @@ import path from 'path';
 import { parseConfig } from '../config-parser.js';
 import type { PipelineConfig } from '../types/config.js';
 // Import types only - these don't pull in workflow runtime code
-import type { PipelineInput, RetestPipelineInput, PipelineState, PipelineProgress } from './shared.js';
+import type { PipelineInput, RetestPipelineInput, PipelineProgress } from './shared.js';
 import { ALL_VULN_TYPES } from '../types/agents.js';
 import type { VulnType } from '../types/agents.js';
 
@@ -51,6 +51,7 @@ interface SessionJson {
   };
   metrics: {
     total_cost_usd: number;
+    agents: Record<string, { status: string; checkpoint?: string }>;
   };
 }
 
@@ -308,11 +309,7 @@ async function resolveWorkspace(
     }
 
     // 3. Find checkpoint hash from completed agents
-    const agents = (session as unknown as {
-      metrics: { agents: Record<string, { status: string; checkpoint?: string }> };
-    }).metrics.agents;
-
-    const checkpoints = Object.values(agents)
+    const checkpoints = Object.values(session.metrics.agents)
       .filter((a) => a.status === 'success' && a.checkpoint)
       .map((a) => a.checkpoint!);
 
@@ -469,7 +466,7 @@ function displayMonitoringInfo(args: CliArgs, workspace: WorkspaceResolution): v
 // === Workflow Result Handling ===
 
 async function waitForWorkflowResult(
-  handle: WorkflowHandle<(input: PipelineInput) => Promise<PipelineState>>,
+  handle: WorkflowHandle,
   workspace: WorkspaceResolution
 ): Promise<void> {
   const progressInterval = setInterval(async () => {
@@ -535,7 +532,9 @@ async function startPipeline(): Promise<void> {
     const workspace = await resolveWorkspace(client, args);
     const pipelineConfig = await loadPipelineConfig(args.configPath);
 
-    let handle: WorkflowHandle<(input: PipelineInput) => Promise<PipelineState>>;
+    // WorkflowHandle generic only affects signal/query typing, not result().
+    // Both workflow signatures return PipelineState, so this union is safe.
+    let handle: WorkflowHandle;
 
     if (workspace.isRetest) {
       // 4a. Start retest workflow
@@ -549,25 +548,19 @@ async function startPipeline(): Promise<void> {
       console.log(`Retesting: ${vulnTypes.join(', ')}`);
       console.log(`Checkpoints: ${retestInput.checkpointHashes.length} found\n`);
 
-      handle = await client.workflow.start<(input: RetestPipelineInput) => Promise<PipelineState>>(
-        'retestPipelineWorkflow',
-        {
-          taskQueue: 'shannon-pipeline',
-          workflowId: workspace.workflowId,
-          args: [retestInput],
-        }
-      ) as unknown as WorkflowHandle<(input: PipelineInput) => Promise<PipelineState>>;
+      handle = await client.workflow.start('retestPipelineWorkflow', {
+        taskQueue: 'shannon-pipeline',
+        workflowId: workspace.workflowId,
+        args: [retestInput],
+      });
     } else {
       // 4b. Start normal pentest workflow
       const input = buildPipelineInput(args, workspace, pipelineConfig);
-      handle = await client.workflow.start<(input: PipelineInput) => Promise<PipelineState>>(
-        'pentestPipelineWorkflow',
-        {
-          taskQueue: 'shannon-pipeline',
-          workflowId: workspace.workflowId,
-          args: [input],
-        }
-      );
+      handle = await client.workflow.start('pentestPipelineWorkflow', {
+        taskQueue: 'shannon-pipeline',
+        workflowId: workspace.workflowId,
+        args: [input],
+      });
     }
 
     // 5. Display info and optionally wait for completion
