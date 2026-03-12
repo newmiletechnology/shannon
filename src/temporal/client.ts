@@ -35,7 +35,9 @@ import path from 'path';
 import { parseConfig } from '../config-parser.js';
 import type { PipelineConfig } from '../types/config.js';
 // Import types only - these don't pull in workflow runtime code
-import type { PipelineInput, PipelineState, PipelineProgress } from './shared.js';
+import type { PipelineInput, RetestPipelineInput, PipelineState, PipelineProgress } from './shared.js';
+import { ALL_VULN_TYPES } from '../types/agents.js';
+import type { VulnType } from '../types/agents.js';
 
 /**
  * Session.json structure for resume validation
@@ -130,6 +132,8 @@ function showUsage(): void {
   console.log('  --output <path>       Output directory for audit logs');
   console.log('  --pipeline-testing    Use minimal prompts for fast testing');
   console.log('  --workspace <name>    Resume from existing workspace');
+  console.log('  --retest              Retest mode (re-run vuln agents after code fixes)');
+  console.log('  --vulns <types>       Comma-separated vuln types for retest (default: all)');
   console.log(
     '  --workflow-id <id>    Custom workflow ID (default: shannon-<timestamp>)'
   );
@@ -153,6 +157,8 @@ interface CliArgs {
   customWorkflowId?: string;
   waitForCompletion: boolean;
   resumeFromWorkspace?: string;
+  retest?: boolean;
+  retestVulnTypes?: VulnType[];
 }
 
 function parseCliArgs(argv: string[]): CliArgs {
@@ -170,6 +176,8 @@ function parseCliArgs(argv: string[]): CliArgs {
   let customWorkflowId: string | undefined;
   let waitForCompletion = false;
   let resumeFromWorkspace: string | undefined;
+  let retest = false;
+  let retestVulnTypes: VulnType[] | undefined;
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -207,6 +215,21 @@ function parseCliArgs(argv: string[]): CliArgs {
       }
     } else if (arg === '--wait') {
       waitForCompletion = true;
+    } else if (arg === '--retest') {
+      retest = true;
+    } else if (arg === '--vulns') {
+      const nextArg = argv[i + 1];
+      if (nextArg && !nextArg.startsWith('-')) {
+        const vulns = nextArg.split(',').map((v) => v.trim());
+        const invalid = vulns.filter((v) => !(ALL_VULN_TYPES as readonly string[]).includes(v));
+        if (invalid.length > 0) {
+          console.error(`ERROR: Invalid vuln type(s): ${invalid.join(', ')}`);
+          console.error(`  Valid types: ${ALL_VULN_TYPES.join(', ')}`);
+          process.exit(1);
+        }
+        retestVulnTypes = vulns as VulnType[];
+        i++;
+      }
     } else if (arg && !arg.startsWith('-')) {
       if (!webUrl) {
         webUrl = arg;
@@ -229,6 +252,8 @@ function parseCliArgs(argv: string[]): CliArgs {
     ...(displayOutputPath && { displayOutputPath }),
     ...(customWorkflowId && { customWorkflowId }),
     ...(resumeFromWorkspace && { resumeFromWorkspace }),
+    ...(retest && { retest }),
+    ...(retestVulnTypes && { retestVulnTypes }),
   };
 }
 
@@ -238,7 +263,9 @@ interface WorkspaceResolution {
   workflowId: string;
   sessionId: string;
   isResume: boolean;
+  isRetest: boolean;
   terminatedWorkflows: string[];
+  checkpointHashes?: string[];
 }
 
 async function resolveWorkspace(
@@ -252,6 +279,7 @@ async function resolveWorkspace(
       workflowId,
       sessionId: workflowId,
       isResume: false,
+      isRetest: false,
       terminatedWorkflows: [],
     };
   }
@@ -259,6 +287,50 @@ async function resolveWorkspace(
   const workspace = args.resumeFromWorkspace;
   const sessionPath = path.join('./audit-logs', workspace, 'session.json');
   const workspaceExists = await fileExists(sessionPath);
+
+  if (workspaceExists && args.retest) {
+    console.log('=== RETEST MODE ===');
+    console.log(`Workspace: ${workspace}\n`);
+
+    // 1. Terminate any running workflows from previous attempts
+    const terminatedWorkflows = await terminateExistingWorkflows(client, workspace);
+    if (terminatedWorkflows.length > 0) {
+      console.log(`Terminated ${terminatedWorkflows.length} previous workflow(s)\n`);
+    }
+
+    // 2. Validate URL matches the workspace
+    const session = await readJson<SessionJson>(sessionPath);
+    if (session.session.webUrl !== args.webUrl) {
+      console.error('ERROR: URL mismatch with workspace');
+      console.error(`  Workspace URL: ${session.session.webUrl}`);
+      console.error(`  Provided URL:  ${args.webUrl}`);
+      process.exit(1);
+    }
+
+    // 3. Find checkpoint hash from completed agents
+    const agents = (session as unknown as {
+      metrics: { agents: Record<string, { status: string; checkpoint?: string }> };
+    }).metrics.agents;
+
+    const checkpoints = Object.values(agents)
+      .filter((a) => a.status === 'success' && a.checkpoint)
+      .map((a) => a.checkpoint!);
+
+    if (checkpoints.length === 0) {
+      console.error('ERROR: No completed agents with checkpoints found in workspace');
+      console.error('  A successful initial run is required before retest');
+      process.exit(1);
+    }
+
+    return {
+      workflowId: `${workspace}_retest_${Date.now()}`,
+      sessionId: workspace,
+      isResume: false,
+      isRetest: true,
+      terminatedWorkflows,
+      checkpointHashes: checkpoints,
+    };
+  }
 
   if (workspaceExists) {
     console.log('=== RESUME MODE ===');
@@ -285,6 +357,7 @@ async function resolveWorkspace(
       workflowId: `${workspace}_resume_${Date.now()}`,
       sessionId: workspace,
       isResume: true,
+      isRetest: false,
       terminatedWorkflows,
     };
   }
@@ -295,6 +368,13 @@ async function resolveWorkspace(
     process.exit(1);
   }
 
+  if (args.retest) {
+    console.error('ERROR: Cannot retest — workspace does not exist');
+    console.error(`  Expected: ./audit-logs/${workspace}/session.json`);
+    console.error('  Run a full pentest first, then retest.');
+    process.exit(1);
+  }
+
   console.log('=== NEW NAMED WORKSPACE ===');
   console.log(`Workspace: ${workspace}\n`);
 
@@ -302,6 +382,7 @@ async function resolveWorkspace(
     workflowId: `${workspace}_shannon-${Date.now()}`,
     sessionId: workspace,
     isResume: false,
+    isRetest: false,
     terminatedWorkflows: [],
   };
 }
@@ -351,7 +432,9 @@ function buildPipelineInput(
 
 function displayWorkflowInfo(args: CliArgs, workspace: WorkspaceResolution): void {
   console.log(`✓ Workflow started: ${workspace.workflowId}`);
-  if (workspace.isResume) {
+  if (workspace.isRetest) {
+    console.log(`  (Retesting workspace: ${workspace.sessionId})`);
+  } else if (workspace.isResume) {
     console.log(`  (Resuming workspace: ${workspace.sessionId})`);
   }
   console.log();
@@ -448,20 +531,44 @@ async function startPipeline(): Promise<void> {
   const client = new Client({ connection });
 
   try {
-    // 3. Resolve workspace (new or resume) and build pipeline input
+    // 3. Resolve workspace (new, resume, or retest) and build pipeline input
     const workspace = await resolveWorkspace(client, args);
     const pipelineConfig = await loadPipelineConfig(args.configPath);
-    const input = buildPipelineInput(args, workspace, pipelineConfig);
 
-    // 4. Start the Temporal workflow
-    const handle = await client.workflow.start<(input: PipelineInput) => Promise<PipelineState>>(
-      'pentestPipelineWorkflow',
-      {
-        taskQueue: 'shannon-pipeline',
-        workflowId: workspace.workflowId,
-        args: [input],
-      }
-    );
+    let handle: WorkflowHandle<(input: PipelineInput) => Promise<PipelineState>>;
+
+    if (workspace.isRetest) {
+      // 4a. Start retest workflow
+      const vulnTypes = args.retestVulnTypes || [...ALL_VULN_TYPES];
+      const retestInput: RetestPipelineInput = {
+        ...buildPipelineInput(args, workspace, pipelineConfig),
+        retestVulnTypes: vulnTypes,
+        checkpointHashes: workspace.checkpointHashes!,
+      };
+
+      console.log(`Retesting: ${vulnTypes.join(', ')}`);
+      console.log(`Checkpoints: ${retestInput.checkpointHashes.length} found\n`);
+
+      handle = await client.workflow.start<(input: RetestPipelineInput) => Promise<PipelineState>>(
+        'retestPipelineWorkflow',
+        {
+          taskQueue: 'shannon-pipeline',
+          workflowId: workspace.workflowId,
+          args: [retestInput],
+        }
+      ) as unknown as WorkflowHandle<(input: PipelineInput) => Promise<PipelineState>>;
+    } else {
+      // 4b. Start normal pentest workflow
+      const input = buildPipelineInput(args, workspace, pipelineConfig);
+      handle = await client.workflow.start<(input: PipelineInput) => Promise<PipelineState>>(
+        'pentestPipelineWorkflow',
+        {
+          taskQueue: 'shannon-pipeline',
+          workflowId: workspace.workflowId,
+          args: [input],
+        }
+      );
+    }
 
     // 5. Display info and optionally wait for completion
     displayWorkflowInfo(args, workspace);

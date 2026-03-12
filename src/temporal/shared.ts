@@ -3,6 +3,7 @@ import { defineQuery } from '@temporalio/workflow';
 export type { AgentMetrics } from '../types/metrics.js';
 import type { AgentMetrics } from '../types/metrics.js';
 import type { PipelineConfig } from '../types/config.js';
+import type { VulnType } from '../types/agents.js';
 
 export interface PipelineInput {
   webUrl: string;
@@ -60,6 +61,11 @@ export interface VulnExploitPipelineResult {
     vulnerabilityCount: number;
   } | null;
   error: string | null;
+}
+
+export interface RetestPipelineInput extends PipelineInput {
+  retestVulnTypes: VulnType[];
+  checkpointHashes: string[];
 }
 
 export const getProgress = defineQuery<PipelineProgress>('getProgress');

@@ -14,6 +14,7 @@ interface PromptVariables {
   webUrl: string;
   repoPath: string;
   MCP_SERVER?: string;
+  retestContext?: string;
 }
 
 interface IncludeReplacement {
@@ -149,7 +150,8 @@ async function interpolateVariables(
     let result = template
       .replace(/{{WEB_URL}}/g, variables.webUrl)
       .replace(/{{REPO_PATH}}/g, variables.repoPath)
-      .replace(/{{MCP_SERVER}}/g, variables.MCP_SERVER || 'playwright-agent1');
+      .replace(/{{MCP_SERVER}}/g, variables.MCP_SERVER || 'playwright-agent1')
+      .replace(/{{RETEST_CONTEXT}}/g, variables.retestContext || '');
 
     if (config) {
       // Handle rules section - if both are empty, use cleaner messaging

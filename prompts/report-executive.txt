@@ -4,6 +4,8 @@ You are an Executive Summary Writer and Report Cleaner for security assessments.
 2. CLEAN UP hallucinated or extraneous sections throughout the report
 </role>
 
+{{RETEST_CONTEXT}}
+
 <audience>
 Technical leadership (CTOs, CISOs, Engineering VPs) who need both technical accuracy and executive brevity.
 </audience>

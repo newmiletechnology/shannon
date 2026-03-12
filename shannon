@@ -41,6 +41,7 @@ show_help() {
 
 Usage:
   ./shannon start URL=<url> REPO=<name>   Start a pentest workflow
+  ./shannon retest WORKSPACE=<name> ...   Retest after code fixes
   ./shannon workspaces                    List all workspaces
   ./shannon logs ID=<workflow-id>         Tail logs for a specific workflow
   ./shannon stop                          Stop all containers
@@ -54,6 +55,14 @@ Options for 'start':
   PIPELINE_TESTING=true  Use minimal prompts for fast testing
   ROUTER=true            Route requests through claude-code-router (multi-model support)
 
+Options for 'retest':
+  WORKSPACE=<name>       Required. Workspace from a previous run
+  URL=<url>              Required. Target URL (must match workspace)
+  REPO=<name>            Required. Repository name
+  VULNS=<types>          Comma-separated vuln types (default: all)
+                         Valid: injection,xss,auth,ssrf,authz
+  CONFIG=<path>          Configuration file (YAML)
+
 Options for 'stop':
   CLEAN=true             Remove all data including volumes
 
@@ -62,6 +71,8 @@ Examples:
   ./shannon start URL=https://example.com REPO=repo-name WORKSPACE=q1-audit
   ./shannon start URL=https://example.com REPO=repo-name CONFIG=./config.yaml
   ./shannon start URL=https://example.com REPO=repo-name OUTPUT=./my-reports
+  ./shannon retest WORKSPACE=q1-audit URL=https://example.com REPO=repo-name
+  ./shannon retest WORKSPACE=q1-audit URL=https://example.com REPO=repo-name VULNS=injection,xss
   ./shannon workspaces
   ./shannon logs ID=example.com_shannon-1234567890
   ./shannon stop CLEAN=true
@@ -84,6 +95,7 @@ parse_args() {
       REBUILD=*) REBUILD="${arg#REBUILD=}" ;;
       ROUTER=*) ROUTER="${arg#ROUTER=}" ;;
       WORKSPACE=*) WORKSPACE="${arg#WORKSPACE=}" ;;
+      VULNS=*) VULNS="${arg#VULNS=}" ;;
     esac
   done
 }
@@ -341,6 +353,62 @@ cmd_workspaces() {
     node dist/temporal/workspaces.js
 }
 
+cmd_retest() {
+  parse_args "$@"
+
+  # Validate required vars
+  if [ -z "$WORKSPACE" ] || [ -z "$URL" ] || [ -z "$REPO" ]; then
+    echo "ERROR: WORKSPACE, URL, and REPO are required for retest"
+    echo "Usage: ./shannon retest WORKSPACE=<name> URL=<url> REPO=<name> [VULNS=injection,xss]"
+    exit 1
+  fi
+
+  # Determine container path for REPO (same logic as cmd_start)
+  case "$REPO" in
+    /benchmarks/*|/repos/*)
+      CONTAINER_REPO="$REPO"
+      ;;
+    *)
+      if [ ! -d "./repos/$REPO" ]; then
+        echo "ERROR: Repository not found at ./repos/$REPO"
+        exit 1
+      fi
+      CONTAINER_REPO="/repos/$REPO"
+      ;;
+  esac
+
+  # Handle custom OUTPUT directory
+  if [ -n "$OUTPUT" ]; then
+    mkdir -p "$OUTPUT"
+    chmod 777 "$OUTPUT"
+    export OUTPUT_DIR="$OUTPUT"
+  fi
+
+  # Ensure audit-logs directory exists
+  mkdir -p ./audit-logs ./credentials
+  chmod 777 ./audit-logs
+
+  # Ensure repo deliverables directory is writable
+  if [ -d "./repos/$REPO" ]; then
+    mkdir -p "./repos/$REPO/deliverables"
+    chmod 777 "./repos/$REPO/deliverables"
+  fi
+
+  # Ensure containers are running
+  ensure_containers
+
+  # Build args
+  ARGS="--retest --workspace $WORKSPACE"
+  [ -n "$CONFIG" ] && ARGS="$ARGS --config $CONFIG"
+  [ -n "$VULNS" ] && ARGS="$ARGS --vulns $VULNS"
+  [ -n "$OUTPUT" ] && ARGS="$ARGS --output /app/output --display-output $OUTPUT"
+  [ "$PIPELINE_TESTING" = "true" ] && ARGS="$ARGS --pipeline-testing"
+
+  # Run the client
+  docker compose -f "$COMPOSE_FILE" $COMPOSE_OVERRIDE exec -T worker \
+    node dist/temporal/client.js "$URL" "$CONTAINER_REPO" $ARGS
+}
+
 cmd_stop() {
   parse_args "$@"
 
@@ -356,6 +424,10 @@ case "${1:-help}" in
   start)
     shift
     cmd_start "$@"
+    ;;
+  retest)
+    shift
+    cmd_retest "$@"
     ;;
   logs)
     shift

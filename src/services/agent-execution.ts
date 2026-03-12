@@ -54,6 +54,7 @@ export interface AgentExecutionInput {
   configPath?: string | undefined;
   pipelineTestingMode?: boolean | undefined;
   attemptNumber: number;
+  retestContext?: string | undefined;
 }
 
 interface FailAgentOpts {
@@ -96,7 +97,7 @@ export class AgentExecutionService {
     auditSession: AuditSession,
     logger: ActivityLogger
   ): Promise<Result<AgentEndResult, PentestError>> {
-    const { webUrl, repoPath, configPath, pipelineTestingMode = false, attemptNumber } = input;
+    const { webUrl, repoPath, configPath, pipelineTestingMode = false, attemptNumber, retestContext } = input;
 
     // 1. Load config (if provided)
     const configResult = await this.configLoader.loadOptional(configPath);
@@ -111,7 +112,7 @@ export class AgentExecutionService {
     try {
       prompt = await loadPrompt(
         promptTemplate,
-        { webUrl, repoPath },
+        { webUrl, repoPath, ...(retestContext && { retestContext }) },
         distributedConfig,
         pipelineTestingMode,
         logger

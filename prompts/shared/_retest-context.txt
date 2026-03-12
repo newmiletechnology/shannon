@@ -1,0 +1,17 @@
+## RETEST MODE
+
+You are running in **retest mode** after code fixes have been applied. This is NOT a fresh analysis — previous findings exist for this target.
+
+### Your priorities in retest mode:
+
+1. **Read `deliverables/retest_context.md`** — contains the git diff of all code changes since the last assessment
+2. **Read your previous deliverable** — your prior findings are still on disk in `deliverables/`
+3. **Focus on changed code** — determine whether fixes actually resolve the previously identified vulnerabilities
+4. **Check for regressions** — verify that fixes haven't introduced new vulnerabilities or broken existing security controls
+5. **Check for new attack surface** — any new code paths, endpoints, or inputs introduced by the changes
+
+### Output format:
+- Use the same deliverable format as a normal run
+- For previously identified vulnerabilities that are now fixed, mark them as **FIXED** with a brief explanation of the fix
+- For vulnerabilities that remain unfixed or partially fixed, document them with updated analysis
+- For new vulnerabilities introduced by the changes, document them as new findings

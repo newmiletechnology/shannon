@@ -14,6 +14,7 @@
  */
 export const ALL_AGENTS = [
   'pre-recon',
+  'pre-recon-update',
   'recon',
   'injection-vuln',
   'xss-vuln',
@@ -64,7 +65,8 @@ export interface AgentDefinition {
 /**
  * Vulnerability types supported by the pipeline.
  */
-export type VulnType = 'injection' | 'xss' | 'auth' | 'ssrf' | 'authz';
+export const ALL_VULN_TYPES = ['injection', 'xss', 'auth', 'ssrf', 'authz'] as const;
+export type VulnType = typeof ALL_VULN_TYPES[number];
 
 /**
  * Decision returned by queue validation for exploitation phase.

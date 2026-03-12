@@ -107,6 +107,51 @@ export async function initializeAuditStructure(sessionMetadata: SessionMetadata)
 }
 
 /**
+ * Snapshot current deliverables before a retest overwrites them.
+ * Creates a timestamped directory under audit-logs/<session>/snapshots/.
+ * Returns the snapshot directory path, or null if no deliverables exist.
+ */
+export async function snapshotDeliverables(
+  sessionMetadata: SessionMetadata,
+  repoPath: string,
+  workflowId: string
+): Promise<string | null> {
+  const sourceDir = path.join(repoPath, 'deliverables');
+
+  let entries: string[];
+  try {
+    entries = await fs.readdir(sourceDir);
+  } catch {
+    return null;
+  }
+
+  const files = [];
+  for (const entry of entries) {
+    const stat = await fs.stat(path.join(sourceDir, entry));
+    if (stat.isFile()) {
+      files.push(entry);
+    }
+  }
+
+  if (files.length === 0) {
+    return null;
+  }
+
+  const snapshotName = `pre-retest_${workflowId}`;
+  const snapshotDir = path.join(generateAuditPath(sessionMetadata), 'snapshots', snapshotName);
+  await ensureDirectory(snapshotDir);
+
+  for (const file of files) {
+    await fs.copyFile(
+      path.join(sourceDir, file),
+      path.join(snapshotDir, file)
+    );
+  }
+
+  return snapshotDir;
+}
+
+/**
  * Copy deliverable files from repo to audit-logs for self-contained audit trail.
  * No-ops if source directory doesn't exist. Idempotent and parallel-safe.
  */

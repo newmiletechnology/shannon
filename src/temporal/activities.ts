@@ -29,7 +29,7 @@ import type { WorkflowSummary } from '../audit/workflow-logger.js';
 import type { AgentName } from '../types/agents.js';
 import { ALL_AGENTS } from '../types/agents.js';
 import type { AgentMetrics, ResumeState } from './shared.js';
-import { copyDeliverablesToAudit, type SessionMetadata } from '../audit/utils.js';
+import { copyDeliverablesToAudit, snapshotDeliverables, type SessionMetadata } from '../audit/utils.js';
 import { readJson, fileExists } from '../utils/file-io.js';
 import { assembleFinalReport, injectModelIntoReport } from '../services/reporting.js';
 import { AGENTS } from '../session-manager.js';
@@ -37,6 +37,7 @@ import { executeGitCommandWithRetry } from '../services/git-manager.js';
 import type { ResumeAttempt } from '../audit/metrics-tracker.js';
 import { createActivityLogger } from './activity-logger.js';
 import { runPreflightChecks } from '../services/preflight.js';
+import { generateRetestContextFile } from '../services/retest-context.js';
 import { isErr } from '../types/result.js';
 
 // Max lengths to prevent Temporal protobuf buffer overflow
@@ -59,6 +60,7 @@ export interface ActivityInput {
   pipelineTestingMode?: boolean;
   workflowId: string;
   sessionId: string;
+  retestContext?: string;
 }
 
 /**
@@ -138,6 +140,7 @@ async function runAgentActivity(
         configPath,
         pipelineTestingMode,
         attemptNumber,
+        ...(input.retestContext && { retestContext: input.retestContext }),
       },
       auditSession,
       logger
@@ -198,6 +201,10 @@ async function runAgentActivity(
 
 export async function runPreReconAgent(input: ActivityInput): Promise<AgentMetrics> {
   return runAgentActivity('pre-recon', input);
+}
+
+export async function runPreReconUpdateAgent(input: ActivityInput): Promise<AgentMetrics> {
+  return runAgentActivity('pre-recon-update', input);
 }
 
 export async function runReconAgent(input: ActivityInput): Promise<AgentMetrics> {
@@ -344,6 +351,63 @@ export async function injectReportMetadataActivity(input: ActivityInput): Promis
     const err = error as Error;
     logger.warn(`Error injecting model into report: ${err.message}`);
   }
+}
+
+/**
+ * Generate retest context from git diff for retest mode.
+ * Resolves the latest checkpoint from the provided hashes, then generates the diff.
+ * Returns the retest preamble text to inject into agent prompts.
+ */
+export async function generateRetestContext(
+  input: ActivityInput,
+  checkpointHashes: string[],
+  selectedVulnTypes: VulnType[]
+): Promise<string> {
+  const { repoPath } = input;
+  const logger = createActivityLogger();
+
+  // Resolve the latest checkpoint commit from all agent checkpoints
+  const checkpointHash = await findLatestCommit(repoPath, checkpointHashes);
+  logger.info('Generating retest context...', { checkpointHash, selectedVulnTypes });
+
+  const result = await generateRetestContextFile(
+    repoPath,
+    checkpointHash,
+    selectedVulnTypes,
+    logger
+  );
+
+  if (isErr(result)) {
+    const classified = classifyErrorForTemporal(result.error);
+    const message = truncateErrorMessage(result.error.message);
+    const failure = ApplicationFailure.nonRetryable(message, classified.type, [
+      { phase: 'retest-context', checkpointHash },
+    ]);
+    truncateStackTrace(failure);
+    throw failure;
+  }
+
+  return result.value;
+}
+
+/**
+ * Snapshot current deliverables before retest agents overwrite them.
+ * Creates a frozen copy under audit-logs/<session>/snapshots/ for history.
+ */
+export async function snapshotDeliverablesActivity(
+  input: ActivityInput
+): Promise<string | null> {
+  const { repoPath, workflowId } = input;
+  const logger = createActivityLogger();
+  const sessionMetadata = buildSessionMetadata(input);
+
+  const snapshotDir = await snapshotDeliverables(sessionMetadata, repoPath, workflowId);
+  if (snapshotDir) {
+    logger.info(`Deliverables snapshot saved to ${snapshotDir}`);
+  } else {
+    logger.info('No deliverables to snapshot');
+  }
+  return snapshotDir;
 }
 
 /**
